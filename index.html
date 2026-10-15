@@ -5,179 +5,240 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RouteSafe | Smart Navigation</title>
+
+  <link rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
   <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="script.js" defer></script>
 </head>
 <body>
-  <header class="site-header">
+  <header class="navbar">
     <a class="brand" href="#">
-      <span class="brand-mark">R</span>
-      <span>RouteSafe<small>SMART ROAD ASSISTANT</small></span>
+      <span class="brand-icon">📍</span>
+      <span>ROUTE<span class="yellow">SAFE</span></span>
     </a>
+
     <nav>
       <a href="#navigation">Navigation</a>
-      <a href="#report">Report a problem</a>
       <a href="#weather">Weather</a>
+      <a href="#report">Report Problem</a>
       <a href="#feedback">Feedback</a>
     </nav>
   </header>
 
-  <main class="container">
+  <main>
     <section class="hero">
-      <div>
-        <p class="eyebrow">TRAVEL SMARTER. ARRIVE SAFER.</p>
-        <h1>Your journey,<br><span>with more confidence.</span></h1>
-        <p class="hero-copy">Plan a route, check current weather, report road hazards, and share feedback in one place.</p>
-        <a class="button primary" href="#navigation">Plan my journey</a>
-      </div>
-      <div class="hero-art" aria-hidden="true">
-        <div class="route-orbit orbit-one"></div>
-        <div class="route-orbit orbit-two"></div>
-        <div class="map-pin">↗</div>
-        <div class="hero-chip chip-top">● Route planning</div>
-        <div class="hero-chip chip-bottom">✓ Safety first</div>
+      <div class="hero-content">
+        <span class="eyebrow">SMART • SAFE • SIMPLE</span>
+        <h1>Your Journey.<br><span>Our Priority.</span></h1>
+        <p>Explore streets, cities, villages and local areas with RouteSafe smart navigation.</p>
+        <a class="primary-button" href="#navigation">Explore Navigation →</a>
       </div>
     </section>
 
-    <section class="section" id="navigation">
-      <div class="section-heading">
-        <div><p class="eyebrow">01 / GET THERE</p><h2>Smart navigation</h2></div>
-        <p>Choose where your journey begins and ends.</p>
+    <section class="container">
+      <div class="feature-grid">
+        <article class="feature-card">
+          <span class="feature-icon">🗺️</span>
+          <h3>Smart Navigation</h3>
+          <p>Find streets, cities, villages and local areas.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">🌦️</span>
+          <h3>Weather Updates</h3>
+          <p>Check the latest available weather conditions.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">⚠️</span>
+          <h3>Report Problems</h3>
+          <p>Report potholes, flooding and road hazards.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">⭐</span>
+          <h3>User Feedback</h3>
+          <p>Share your experience and rate RouteSafe.</p>
+        </article>
       </div>
-      <div class="navigation-layout">
-        <div class="panel form-panel">
-          <button type="button" class="button secondary full" id="currentLocationBtn">◎ Use my current location</button>
-          <label for="startLocation">Starting point</label>
-          <input id="startLocation" type="text" placeholder="Use GPS or enter a place">
-          <label for="destinationInput">Where do you want to go?</label>
-          <input id="destinationInput" type="text" placeholder="e.g. Vijayawada, Andhra Pradesh">
-          <button type="button" class="button primary full" id="findRouteBtn">Find route →</button>
-          <p id="navigationStatus" class="status" role="status">Allow location access or enter a starting point.</p>
-          <div id="navigationDetails" class="route-details"></div>
-          <button type="button" class="button dark full" id="startNavigationBtn" hidden>Start navigation in Google Maps ↗</button>
-        </div>
-        <div class="map-panel">
-          <div id="map" aria-label="Interactive road map"></div>
-          <p class="map-note">Click the map to select a location for a road report.</p>
-        </div>
-      </div>
-    </section>
 
-    <section class="section" id="report">
-      <div class="section-heading">
-        <div><p class="eyebrow">02 / HELP OTHER TRAVELERS</p><h2>Report a road problem</h2></div>
-        <p>Share a hazard you noticed on the road.</p>
-      </div>
-      <div class="two-column">
-        <form class="panel" id="reportForm">
-          <label for="roadLocation">Road or area</label>
-          <input id="roadLocation" required placeholder="e.g. NH 16 near Guntur">
-          <label for="problemType">Problem type</label>
-          <select id="problemType">
-            <option value="construction">Road construction</option>
-            <option value="closure">Road closure</option>
-            <option value="flooding">Flooding / waterlogging</option>
-            <option value="accident">Accident</option>
-            <option value="pothole">Pothole / damaged road</option>
-          </select>
-          <label for="problemDetails">Additional details (optional)</label>
-          <textarea id="problemDetails" rows="3" placeholder="Describe what you noticed"></textarea>
-          <p class="small-note" id="selectedMapPoint">Optional: click the map to attach coordinates to this report.</p>
-          <button class="button primary" type="submit">Submit road report</button>
-          <p class="status" id="reportStatus" role="status"></p>
+      <section class="panel" id="navigation">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">PLAN YOUR JOURNEY</span>
+            <h2>Smart Navigation</h2>
+          </div>
+          <button id="locateBtn" class="secondary-button" type="button">
+            ◎ Use My Location
+          </button>
+        </div>
+
+        <form id="searchForm" class="search-grid">
+          <label>
+            Starting location
+            <input id="startLocation" placeholder="e.g. Guntur, Andhra Pradesh">
+          </label>
+          <label>
+            Destination
+            <input id="destination" placeholder="e.g. Vijayawada, Andhra Pradesh" required>
+          </label>
+          <label>
+            Location type
+            <select id="locationType">
+              <option value="all">Urban + Rural</option>
+              <option value="urban">Urban locations</option>
+              <option value="rural">Rural locations</option>
+            </select>
+          </label>
+          <button class="primary-button search-button" type="submit">
+            Search & Route
+          </button>
         </form>
-        <div class="panel list-panel">
-          <div class="panel-title-row"><h3>Recent reports</h3><span class="pill" id="reportCount">0 reports</span></div>
-          <div id="reportList" class="feed-list"></div>
-        </div>
-      </div>
-    </section>
 
-    <section class="section" id="weather">
-      <div class="section-heading">
-        <div><p class="eyebrow">03 / CHECK CONDITIONS</p><h2>Weather on your mind?</h2></div>
-        <p>Check current conditions and travel precautions.</p>
-      </div>
-      <div class="weather-layout">
-        <form class="panel weather-search" id="weatherForm">
-          <label for="weatherCity">City or town</label>
-          <input id="weatherCity" value="Guntur" placeholder="Enter a city">
-          <button class="button primary full" type="submit">Check weather</button>
-          <p class="small-note">Weather data supplied by Open-Meteo.</p>
+        <div class="search-row">
+          <label for="placeSearch">Search any street, city or local area</label>
+          <div class="inline-form">
+            <input id="placeSearch" placeholder="e.g. Arundelpet, Guntur">
+            <button id="placeSearchBtn" class="secondary-button" type="button">
+              Find Location
+            </button>
+          </div>
+        </div>
+
+        <p id="status" class="status" role="status">
+          Enter a destination to get started.
+        </p>
+        <div id="searchResults" class="search-results"></div>
+
+        <div class="map-info">
+          <div>
+            <span class="muted">Distance</span>
+            <strong id="distance">—</strong>
+          </div>
+          <div>
+            <span class="muted">Estimated driving time</span>
+            <strong id="duration">—</strong>
+          </div>
+          <a id="directionsLink" class="secondary-button"
+             href="#" target="_blank" rel="noopener" hidden>
+            Open Directions
+          </a>
+        </div>
+
+        <div id="map" aria-label="Interactive navigation map"></div>
+        <p class="small-note">
+          Map and route data depend on public map coverage. Always follow
+          road signs and local traffic rules.
+        </p>
+      </section>
+
+      <section class="panel" id="weather">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">TRAVEL CONDITIONS</span>
+            <h2>Weather Updates</h2>
+          </div>
+          <span class="feature-icon">🌤️</span>
+        </div>
+
+        <form id="weatherForm" class="inline-form">
+          <input id="weatherLocation" placeholder="Enter a city or village"
+                 value="Guntur, Andhra Pradesh" required>
+          <button class="primary-button" type="submit">Check Weather</button>
         </form>
-        <div id="weatherResult" class="panel weather-result"><p>Loading weather…</p></div>
-      </div>
-    </section>
-
-    <section class="section" id="precautions">
-      <div class="section-heading">
-        <div><p class="eyebrow">04 / TRAVEL SAFELY</p><h2>Safety precautions</h2></div>
-        <p>Choose the conditions you are facing.</p>
-      </div>
-      <form id="precautionForm" class="panel precaution-controls">
-        <div>
-          <label for="precautionType">Road situation</label>
-          <select id="precautionType">
-            <option value="normal">Normal conditions</option>
-            <option value="construction">Construction</option>
-            <option value="closure">Road closure</option>
-            <option value="flooding">Flooding</option>
-            <option value="accident">Accident nearby</option>
-            <option value="pothole">Potholes / damaged road</option>
-          </select>
+        <div id="weatherResult" class="weather-grid">
+          <p class="muted">Search a location to see its weather.</p>
         </div>
-        <div>
-          <label for="precautionWeather">Weather</label>
-          <select id="precautionWeather">
-            <option value="clear">Clear / normal</option>
-            <option value="rain">Rain</option>
-            <option value="storm">Thunderstorm / strong wind</option>
-            <option value="fog">Fog</option>
-            <option value="heat">Extreme heat</option>
-          </select>
-        </div>
-        <button class="button primary" type="submit">Show precautions</button>
-      </form>
-      <div id="precautionResult" class="precaution-grid"></div>
-    </section>
+      </section>
 
-    <section class="section" id="feedback">
-      <div class="section-heading">
-        <div><p class="eyebrow">05 / YOUR VOICE MATTERS</p><h2>Feedback from travelers</h2></div>
-        <p>Share your experience and see feedback saved in this browser.</p>
-      </div>
-      <div class="two-column">
-        <form class="panel" id="feedbackForm">
-          <label for="feedbackName">Your name (optional)</label>
-          <input id="feedbackName" placeholder="Name">
-          <label for="feedbackRating">Rating</label>
-          <select id="feedbackRating">
-            <option value="5">★★★★★ — Excellent</option>
-            <option value="4">★★★★☆ — Good</option>
-            <option value="3">★★★☆☆ — Average</option>
-            <option value="2">★★☆☆☆ — Needs improvement</option>
-            <option value="1">★☆☆☆☆ — Poor</option>
-          </select>
-          <label for="feedbackText">Your feedback</label>
-          <textarea id="feedbackText" rows="4" required minlength="3" placeholder="Tell us what worked well or what we can improve"></textarea>
-          <button class="button primary" type="submit">Send feedback</button>
-          <p class="status" id="feedbackStatus" role="status"></p>
+      <section class="panel" id="report">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">HELP MAKE ROADS SAFER</span>
+            <h2>Report a Road Problem</h2>
+          </div>
+          <span class="feature-icon">🚧</span>
+        </div>
+
+        <form id="reportForm" class="form-grid">
+          <label>
+            Problem type
+            <select id="problemType" required>
+              <option value="Pothole">Pothole</option>
+              <option value="Damaged road">Damaged road</option>
+              <option value="Waterlogging / flooding">Waterlogging / flooding</option>
+              <option value="Broken streetlight">Broken streetlight</option>
+              <option value="Traffic hazard">Traffic hazard</option>
+              <option value="Other">Other</option>
+            </select>
+          </label>
+          <label>
+            Location
+            <input id="problemLocation" placeholder="Street, village or city" required>
+          </label>
+          <label class="full-width">
+            Description
+            <textarea id="problemDescription" rows="3"
+              placeholder="Describe the problem and any safety concern" required></textarea>
+          </label>
+          <label class="full-width">
+            Optional photo
+            <input id="problemPhoto" type="file" accept="image/*">
+          </label>
+          <button class="danger-button" type="submit">Submit Report</button>
         </form>
-        <div class="panel list-panel">
-          <div class="panel-title-row"><h3>Community feedback</h3><span class="pill" id="feedbackCount">0 entries</span></div>
-          <div id="feedbackList" class="feed-list"></div>
-        </div>
-      </div>
-    </section>
 
-    <p class="disclaimer">Demo project: route, weather, and geocoding services require an internet connection. Reports and feedback are stored only in this browser and are not shared with other users. Always follow official road closures and emergency instructions.</p>
+        <h3 class="subheading">Recent Reports</h3>
+        <div id="reportsList" class="feed-list"></div>
+      </section>
+
+      <section class="panel" id="feedback">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">YOUR EXPERIENCE MATTERS</span>
+            <h2>User Feedback</h2>
+          </div>
+          <span class="feature-icon">⭐</span>
+        </div>
+
+        <form id="feedbackForm" class="form-grid">
+          <label>
+            Your name
+            <input id="feedbackName" placeholder="Enter your name" required>
+          </label>
+          <label>
+            Rating
+            <select id="feedbackRating" required>
+              <option value="5">★★★★★ — Excellent</option>
+              <option value="4">★★★★ — Very good</option>
+              <option value="3">★★★ — Good</option>
+              <option value="2">★★ — Fair</option>
+              <option value="1">★ — Needs improvement</option>
+            </select>
+          </label>
+          <label class="full-width">
+            Your comments
+            <textarea id="feedbackMessage" rows="3"
+              placeholder="Share your experience with RouteSafe" required></textarea>
+          </label>
+          <button class="primary-button" type="submit">Submit Feedback</button>
+        </form>
+
+        <h3 class="subheading">Latest Feedback</h3>
+        <div id="feedbackList" class="feed-list"></div>
+      </section>
+    </section>
   </main>
 
-  <footer><span>RouteSafe</span><span>Plan carefully. Travel safely.</span></footer>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="script.js"></script>
+  <footer>
+    <a class="brand" href="#">📍 ROUTE<span class="yellow">SAFE</span></a>
+    <p>© <span id="year"></span> RouteSafe. Safer journeys, smarter navigation.</p>
+    <p class="small-note">Map data © OpenStreetMap contributors.</p>
+  </footer>
 </body>
 </html>
+
+
+
 
 
