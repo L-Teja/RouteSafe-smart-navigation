@@ -1,10 +1,475 @@
 
-const $ = id => document.getElementById(id);
+"use strict";
 
-const REPORTS_KEY = "routesafe_complete_reports_v1";
-const FEEDBACK_KEY = "routesafe_complete_feedback_v1";
+const $ = (id) => document.getElementById(id);
 
-function readData(key) {
+$("year").textContent = new Date().getFullYear();
+
+// --------------------------------------------------
+// MAP SETUP
+// --------------------------------------------------
+
+const map = L.map("map").setView([16.3067, 80.4365], 11);
+
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+
+let startMarker = null;
+let destinationMarker = null;
+let selectedMarker = null;
+let routeLayer = null;
+let currentStart = null;
+let currentDestination = null;
+
+function setStatus(message) {
+  $("status").textContent = message;
+}
+
+function addMarker(coords, label) {
+  return L.marker(coords).addTo(map).bindPopup(label);
+}
+
+function clearRoute() {
+  if (routeLayer) {
+    map.removeLayer(routeLayer);
+    routeLayer = null;
+  }
+
+  [startMarker, destinationMarker].forEach(marker => {
+    if (marker) map.removeLayer(marker);
+  });
+
+  startMarker = null;
+  destinationMarker = null;
+  $("distance").textContent = "—";
+  $("duration").textContent = "—";
+  $("directionsLink").hidden = true;
+}
+
+// --------------------------------------------------
+// LOCATION SEARCH
+// --------------------------------------------------
+
+async function searchLocations(query) {
+  if (!query.trim()) {
+    throw new Error("Please enter a location.");
+  }
+
+  const url = new URL("https://nominatim.openstreetmap.org/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("addressdetails", "1");
+  url.searchParams.set("limit", "10");
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error("Location search is temporarily unavailable.");
+  }
+
+  return response.json();
+}
+
+function locationCategory(place) {
+  const a = place.address || {};
+  const type = `${place.type || ""} ${place.class || ""}`.toLowerCase();
+
+  if (
+    a.city || a.town || a.city_district ||
+    ["city", "town", "suburb", "commercial", "residential"].some(
+      term => type.includes(term)
+    )
+  ) {
+    return "urban";
+  }
+
+  if (
+    a.village || a.hamlet || a.farm || a.isolated_dwelling ||
+    ["village", "hamlet", "farm", "rural"].some(
+      term => type.includes(term)
+    )
+  ) {
+    return "rural";
+  }
+
+  return "other";
+}
+
+function filterPlaces(places) {
+  const filter = $("locationType").value;
+
+  if (filter === "all") return places;
+
+  return places.filter(place => locationCategory(place) === filter);
+}
+
+function showSearchResults(places) {
+  const results = $("searchResults");
+  results.replaceChildren();
+
+  if (!places.length) {
+    results.innerHTML =
+      '<p class="empty-state">No matching locations found. Try another spelling or select Urban + Rural.</p>';
+    return;
+  }
+
+  places.forEach(place => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "result-item";
+
+    const name = document.createElement("strong");
+    name.textContent = place.name ||
+      place.display_name.split(",")[0];
+
+    const detail = document.createElement("small");
+    const category = locationCategory(place);
+    detail.textContent =
+      `${category === "other" ? "Location" : category.toUpperCase()} · ${place.display_name}`;
+
+    button.append(name, detail);
+
+    button.addEventListener("click", () => {
+      const coords = [Number(place.lat), Number(place.lon)];
+
+      map.setView(coords, 16);
+
+      if (selectedMarker) map.removeLayer(selectedMarker);
+      selectedMarker = addMarker(coords, place.display_name);
+      selectedMarker.openPopup();
+
+      $("weatherLocation").value = place.display_name;
+      $("problemLocation").value = place.display_name;
+
+      setStatus("Location selected: " + place.display_name);
+      loadWeatherForPlace(place.display_name, coords[0], coords[1]);
+    });
+
+    results.appendChild(button);
+  });
+}
+
+async function performPlaceSearch() {
+  const query = $("placeSearch").value.trim();
+
+  setStatus("Searching map locations...");
+  $("searchResults").replaceChildren();
+
+  try {
+    const places = await searchLocations(query);
+    const filtered = filterPlaces(places);
+
+    showSearchResults(filtered);
+    setStatus(`Found ${filtered.length} matching location(s).`);
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+$("placeSearchBtn").addEventListener("click", performPlaceSearch);
+
+$("placeSearch").addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    performPlaceSearch();
+  }
+});
+
+$("locationType").addEventListener("change", () => {
+  if ($("placeSearch").value.trim()) performPlaceSearch();
+});
+
+// --------------------------------------------------
+// ROUTE CALCULATION
+// --------------------------------------------------
+
+async function geocodeOne(query) {
+  const places = await searchLocations(query);
+
+  if (!places.length) {
+    throw new Error(`Could not find "${query}". Try a more specific address.`);
+  }
+
+  const selected = places[0];
+
+  return {
+    lat: Number(selected.lat),
+    lon: Number(selected.lon),
+    name: selected.display_name
+  };
+}
+
+async function calculateRoute(start, destination) {
+  clearRoute();
+
+  currentStart = start;
+  currentDestination = destination;
+
+  const startCoords = [start.lat, start.lon];
+  const endCoords = [destination.lat, destination.lon];
+
+  startMarker = addMarker(startCoords, "Start: " + start.name);
+  destinationMarker = addMarker(endCoords, "Destination: " + destination.name);
+
+  setStatus("Calculating driving route...");
+
+  const url =
+    "https://router.project-osrm.org/route/v1/driving/" +
+    `${start.lon},${start.lat};${destination.lon},${destination.lat}` +
+    "?overview=full&geometries=geojson";
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error("Route service is unavailable. Try again later.");
+  }
+
+  const data = await response.json();
+
+  if (data.code !== "Ok" || !data.routes?.length) {
+    throw new Error("No driving route was found between these locations.");
+  }
+
+  const route = data.routes[0];
+
+  routeLayer = L.geoJSON(route.geometry, {
+    style: {
+      color: "#087a4b",
+      weight: 6,
+      opacity: 0.85
+    }
+  }).addTo(map);
+
+  map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+
+  $("distance").textContent =
+    `${(route.distance / 1000).toFixed(1)} km`;
+
+  const minutes = Math.round(route.duration / 60);
+  $("duration").textContent =
+    minutes >= 60
+      ? `${Math.floor(minutes / 60)} hr ${minutes % 60} min`
+      : `${minutes} min`;
+
+  const directions = new URL("https://www.google.com/maps/dir/");
+  directions.searchParams.set("api", "1");
+  directions.searchParams.set("origin", `${start.lat},${start.lon}`);
+  directions.searchParams.set(
+    "destination",
+    `${destination.lat},${destination.lon}`
+  );
+  directions.searchParams.set("travelmode", "driving");
+
+  $("directionsLink").href = directions.toString();
+  $("directionsLink").hidden = false;
+
+  setStatus("Route calculated successfully.");
+}
+
+$("searchForm").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const startText = $("startLocation").value.trim();
+  const destinationText = $("destination").value.trim();
+
+  if (!destinationText) {
+    setStatus("Please enter a destination.");
+    return;
+  }
+
+  try {
+    setStatus("Finding locations...");
+
+    let start;
+
+    if (startText) {
+      start = await geocodeOne(startText);
+    } else {
+      start = {
+        lat: 16.3067,
+        lon: 80.4365,
+        name: "Guntur, Andhra Pradesh (default start)"
+      };
+    }
+
+    const destination = await geocodeOne(destinationText);
+
+    await calculateRoute(start, destination);
+
+    $("weatherLocation").value = destination.name;
+    loadWeatherForPlace(
+      destination.name,
+      destination.lat,
+      destination.lon
+    );
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
+
+// --------------------------------------------------
+// USER'S CURRENT LOCATION
+// --------------------------------------------------
+
+$("locateBtn").addEventListener("click", () => {
+  if (!navigator.geolocation) {
+    setStatus("Your browser does not support location access.");
+    return;
+  }
+
+  setStatus("Requesting permission to access your location...");
+
+  navigator.geolocation.getCurrentPosition(
+    position => {
+      const lat = position.coords.latitude;
+      const lon = position.coords.longitude;
+      const coords = [lat, lon];
+
+      map.setView(coords, 16);
+
+      if (selectedMarker) map.removeLayer(selectedMarker);
+      selectedMarker = addMarker(coords, "Your current location");
+      selectedMarker.openPopup();
+
+      $("startLocation").value = `${lat}, ${lon}`;
+      $("problemLocation").value = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+
+      setStatus("Current location found. Enter your destination to route.");
+    },
+    error => {
+      setStatus(
+        error.code === 1
+          ? "Location permission was denied. You can enter an address instead."
+          : "Unable to get your location. Please enter an address manually."
+      );
+    },
+    { enableHighAccuracy: true, timeout: 12000 }
+  );
+});
+
+// --------------------------------------------------
+// WEATHER
+// --------------------------------------------------
+
+const weatherDescriptions = {
+  0: "Clear sky",
+  1: "Mainly clear",
+  2: "Partly cloudy",
+  3: "Overcast",
+  45: "Fog",
+  48: "Freezing fog",
+  51: "Light drizzle",
+  53: "Drizzle",
+  55: "Heavy drizzle",
+  61: "Light rain",
+  63: "Rain",
+  65: "Heavy rain",
+  71: "Light snow",
+  73: "Snow",
+  75: "Heavy snow",
+  80: "Rain showers",
+  81: "Rain showers",
+  82: "Heavy rain showers",
+  95: "Thunderstorm",
+  96: "Thunderstorm with hail",
+  99: "Severe thunderstorm"
+};
+
+async function loadWeatherForPlace(name, lat, lon) {
+  $("weatherResult").replaceChildren();
+
+  const loading = document.createElement("p");
+  loading.className = "muted";
+  loading.textContent = "Loading weather...";
+  $("weatherResult").appendChild(loading);
+
+  try {
+    const url = new URL("https://api.open-meteo.com/v1/forecast");
+    url.searchParams.set("latitude", lat);
+    url.searchParams.set("longitude", lon);
+    url.searchParams.set(
+      "current",
+      "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m"
+    );
+
+    const response = await fetch(url);
+
+    if (!response.ok) throw new Error("Weather service unavailable.");
+
+    const data = await response.json();
+    const current = data.current;
+
+    const items = [
+      ["Location", name],
+      ["Conditions", weatherDescriptions[current.weather_code] || "Unknown"],
+      ["Temperature", `${current.temperature_2m} °C`],
+      ["Feels like", `${current.apparent_temperature} °C`],
+      ["Humidity", `${current.relative_humidity_2m}%`],
+      ["Wind speed", `${current.wind_speed_10m} km/h`],
+      ["Precipitation", `${current.precipitation} mm`]
+    ];
+
+    const advice = document.createElement("p");
+    advice.className = "empty-state full-width";
+
+    if ([61, 63, 65, 80, 81, 82, 95, 96, 99].includes(current.weather_code)) {
+      advice.textContent =
+        "Travel advice: Rain or storm conditions may affect visibility and road safety. Check local warnings and drive carefully.";
+    } else {
+      advice.textContent =
+        "Travel advice: Check local road conditions before travelling and follow traffic signs.";
+    }
+
+    $("weatherResult").replaceChildren();
+
+    items.forEach(([label, value]) => {
+      const card = document.createElement("div");
+      card.className = "weather-item";
+
+      const title = document.createElement("span");
+      title.textContent = label;
+
+      const content = document.createElement("strong");
+      content.textContent = value;
+
+      card.append(title, content);
+      $("weatherResult").appendChild(card);
+    });
+
+    $("weatherResult").appendChild(advice);
+  } catch (error) {
+    $("weatherResult").replaceChildren();
+
+    const message = document.createElement("p");
+    message.className = "empty-state";
+    message.textContent = error.message;
+    $("weatherResult").appendChild(message);
+  }
+}
+
+$("weatherForm").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  try {
+    const place = await geocodeOne($("weatherLocation").value.trim());
+
+    await loadWeatherForPlace(
+      place.name,
+      place.lat,
+      place.lon
+    );
+  } catch (error) {
+    $("weatherResult").textContent = error.message;
+  }
+});
+
+// --------------------------------------------------
+// REPORTS AND FEEDBACK STORAGE
+// --------------------------------------------------
+
+function readStorage(key) {
   try {
     const value = JSON.parse(localStorage.getItem(key) || "[]");
     return Array.isArray(value) ? value : [];
@@ -13,826 +478,190 @@ function readData(key) {
   }
 }
 
-function saveData(key, value) {
+function writeStorage(key, data) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    localStorage.setItem(key, JSON.stringify(data));
     return true;
   } catch {
+    alert("Browser storage is full or unavailable. Try a smaller photo.");
     return false;
   }
 }
 
-function escapeHTML(value) {
-  return String(value ?? "").replace(/[&<>"']/g, char => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  }[char]));
+function makeFeedItem(title, description, date) {
+  const article = document.createElement("article");
+  article.className = "feed-item";
+
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+
+  const body = document.createElement("p");
+  body.textContent = description;
+
+  const timestamp = document.createElement("small");
+  timestamp.textContent = new Date(date).toLocaleString();
+
+  article.append(heading, body, timestamp);
+  return article;
 }
 
-function status(id, message, type = "") {
-  const node = $(id);
-  node.textContent = message;
-  node.className = `status ${type}`.trim();
-}
+// --------------------------------------------------
+// ROAD PROBLEM REPORTS
+// --------------------------------------------------
 
-// -------------------------
-// 1. INITIALIZE THE MAP
-// -------------------------
+function renderReports() {
+  const list = $("reportsList");
+  list.replaceChildren();
 
-const map = L.map("map").setView([16.3067, 80.4365], 11);
+  const reports = readStorage("routesafe_reports");
 
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution: "&copy; OpenStreetMap contributors"
-}).addTo(map);
-
-const problemTypes = {
-  construction: {
-    label: "Road construction",
-    color: "#d58b27"
-  },
-  closure: {
-    label: "Road closure",
-    color: "#d64e4e"
-  },
-  flooding: {
-    label: "Flooding / waterlogging",
-    color: "#347bd1"
-  },
-  accident: {
-    label: "Accident",
-    color: "#9256b5"
-  },
-  pothole: {
-    label: "Pothole / damaged road",
-    color: "#657780"
-  }
-};
-
-let selectedPoint = null;
-let currentLocation = null;
-let destination = null;
-let routeLayer = null;
-let startMarker = null;
-let destinationMarker = null;
-
-const reportLayers = [];
-
-// -------------------------
-// 2. DISPLAY ROAD REPORTS
-// -------------------------
-
-function drawReport(report) {
-  if (
-    !Number.isFinite(Number(report.lat)) ||
-    !Number.isFinite(Number(report.lng))
-  ) {
+  if (!reports.length) {
+    list.innerHTML = '<p class="empty-state">No reports yet. Be the first to report a road problem.</p>';
     return;
   }
 
-  const type =
-    problemTypes[report.type] || problemTypes.construction;
+  reports.forEach(report => {
+    const item = makeFeedItem(
+      `${report.type} — ${report.location}`,
+      report.description,
+      report.date
+    );
 
-  const marker = L.circleMarker(
-    [Number(report.lat), Number(report.lng)],
-    {
-      radius: 8,
-      color: "#fff",
-      weight: 2,
-      fillColor: type.color,
-      fillOpacity: 0.95
+    if (report.photo) {
+      const image = document.createElement("img");
+      image.src = report.photo;
+      image.alt = "Photo attached to road problem report";
+      item.appendChild(image);
     }
-  ).addTo(map);
 
-  marker.bindPopup(`
-    <strong>${escapeHTML(type.label)}</strong><br>
-    ${escapeHTML(report.location)}<br>
-    ${escapeHTML(report.details || "No additional details")}
-  `);
-
-  reportLayers.push(marker);
+    list.appendChild(item);
+  });
 }
 
-function renderReports() {
-  const reports = readData(REPORTS_KEY);
-
-  $("reportCount").textContent =
-    `${reports.length} report${reports.length === 1 ? "" : "s"}`;
-
-  $("reportList").innerHTML = reports.length
-    ? reports.slice(0, 30).map(report => {
-        const type =
-          problemTypes[report.type] || problemTypes.construction;
-
-        return `
-          <article class="feed-item">
-            <div class="feed-top">
-              <h4>${escapeHTML(type.label)}</h4>
-              <span class="tag">${escapeHTML(report.type)}</span>
-            </div>
-            <p><strong>${escapeHTML(report.location)}</strong></p>
-            ${report.details
-              ? `<p>${escapeHTML(report.details)}</p>`
-              : ""}
-            <small>
-              ${escapeHTML(report.date || "")}
-              ${report.lat != null ? " · map location attached" : ""}
-            </small>
-          </article>
-        `;
-      }).join("")
-    : `<p class="small-note">
-         No reports yet. Share the first road update.
-       </p>`;
-}
-
-readData(REPORTS_KEY).forEach(drawReport);
-
-// Click the map to select a report location.
-map.on("click", event => {
-  selectedPoint = {
-    lat: event.latlng.lat,
-    lng: event.latlng.lng
-  };
-
-  $("selectedMapPoint").textContent =
-    `Map point selected: ${selectedPoint.lat.toFixed(5)}, ` +
-    `${selectedPoint.lng.toFixed(5)}.`;
-
-  status(
-    "reportStatus",
-    "Map location attached to the next report.",
-    "success"
-  );
-});
-
-// -------------------------
-// 3. GET CURRENT GPS LOCATION
-// -------------------------
-
-$("currentLocationBtn").addEventListener("click", () => {
-  if (!navigator.geolocation) {
-    return status(
-      "navigationStatus",
-      "GPS is not supported by this browser.",
-      "error"
-    );
-  }
-
-  status("navigationStatus", "Getting your current location...");
-
-  navigator.geolocation.getCurrentPosition(
-    position => {
-      currentLocation = {
-        lat: position.coords.latitude,
-        lng: position.coords.longitude
-      };
-
-      $("startLocation").value =
-        `${currentLocation.lat.toFixed(6)}, ` +
-        `${currentLocation.lng.toFixed(6)}`;
-
-      map.setView(
-        [currentLocation.lat, currentLocation.lng],
-        15
-      );
-
-      if (startMarker) {
-        map.removeLayer(startMarker);
-      }
-
-      startMarker = L.marker([
-        currentLocation.lat,
-        currentLocation.lng
-      ])
-        .addTo(map)
-        .bindPopup("Your current location")
-        .openPopup();
-
-      status(
-        "navigationStatus",
-        "Location detected. Enter a destination and find your route.",
-        "success"
-      );
-    },
-    () => {
-      status(
-        "navigationStatus",
-        "Could not get location. Allow location permission or enter a starting point manually.",
-        "error"
-      );
-    },
-    {
-      enableHighAccuracy: true,
-      timeout: 15000,
-      maximumAge: 0
-    }
-  );
-});
-
-// -------------------------
-// 4. SEARCH FOR A PLACE
-// -------------------------
-
-async function geocode(query) {
-  const url =
-    "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" +
-    encodeURIComponent(query);
-
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error("Place search service is unavailable.");
-  }
-
-  const results = await response.json();
-
-  if (!results.length) {
-    throw new Error(
-      `Could not find "${query}". Try a more specific place.`
-    );
-  }
-
-  return {
-    lat: Number(results[0].lat),
-    lng: Number(results[0].lon),
-    name: results[0].display_name
-  };
-}
-
-// -------------------------
-// 5. FIND AND DRAW A ROUTE
-// -------------------------
-
-$("findRouteBtn").addEventListener("click", async () => {
-  try {
-    const startText = $("startLocation").value.trim();
-    const destinationText =
-      $("destinationInput").value.trim();
-
-    if (!startText) {
-      throw new Error(
-        "Click Use my current location or enter a starting point."
-      );
-    }
-
-    if (!destinationText) {
-      throw new Error("Enter your destination.");
-    }
-
-    status("navigationStatus", "Finding your route...");
-    $("navigationDetails").innerHTML = "";
-    $("startNavigationBtn").hidden = true;
-
-    // Accept either typed coordinates or a place name.
-    const coords = startText.match(
-      /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/
-    );
-
-    const start = coords
-      ? {
-          lat: Number(coords[1]),
-          lng: Number(coords[2]),
-          name: "Starting point"
-        }
-      : await geocode(startText);
-
-    currentLocation = {
-      lat: start.lat,
-      lng: start.lng
-    };
-
-    destination = await geocode(destinationText);
-
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${start.lng},${start.lat};` +
-      `${destination.lng},${destination.lat}` +
-      `?overview=full&geometries=geojson`;
-
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      throw new Error(
-        "Routing service is unavailable. Try again later."
-      );
-    }
-
-    const result = await response.json();
-
-    if (result.code !== "Ok" || !result.routes?.length) {
-      throw new Error("No driving route found for these locations.");
-    }
-
-    const route = result.routes[0];
-
-    // Remove old route and endpoint markers.
-    if (routeLayer) map.removeLayer(routeLayer);
-    if (startMarker) map.removeLayer(startMarker);
-    if (destinationMarker) map.removeLayer(destinationMarker);
-
-    // Draw the route.
-    routeLayer = L.geoJSON(route.geometry, {
-      style: {
-        color: "#087f70",
-        weight: 6,
-        opacity: 0.9
-      }
-    }).addTo(map);
-
-    startMarker = L.marker([start.lat, start.lng])
-      .addTo(map)
-      .bindPopup("Starting point");
-
-    destinationMarker = L.marker([
-      destination.lat,
-      destination.lng
-    ])
-      .addTo(map)
-      .bindPopup("Destination");
-
-    map.fitBounds(routeLayer.getBounds(), {
-      padding: [30, 30]
-    });
-
-    const km = (route.distance / 1000).toFixed(1);
-    const totalMinutes = Math.round(route.duration / 60);
-
-    const duration = totalMinutes >= 60
-      ? `${Math.floor(totalMinutes / 60)} hr ${totalMinutes % 60} min`
-      : `${totalMinutes} min`;
-
-    $("navigationDetails").innerHTML = `
-      <div class="route-stat">
-        <strong>${km} km</strong> · approximately
-        <strong>${duration}</strong>
-        <p class="small-note">
-          Estimated time from the demo routing service;
-          live traffic may change it.
-        </p>
-      </div>
-      <p class="small-note">
-        <strong>To:</strong> ${escapeHTML(destinationText)}
-      </p>
-    `;
-
-    $("startNavigationBtn").hidden = false;
-
-    status(
-      "navigationStatus",
-      "Route found and displayed on the map.",
-      "success"
-    );
-  } catch (error) {
-    status(
-      "navigationStatus",
-      error.message || "Unable to find route.",
-      "error"
-    );
-  }
-});
-
-// Open turn-by-turn navigation in Google Maps.
-$("startNavigationBtn").addEventListener("click", () => {
-  if (!currentLocation || !destination) {
-    return status(
-      "navigationStatus",
-      "Find a route first.",
-      "error"
-    );
-  }
-
-  const url =
-    "https://www.google.com/maps/dir/?api=1" +
-    `&origin=${currentLocation.lat},${currentLocation.lng}` +
-    `&destination=${destination.lat},${destination.lng}` +
-    "&travelmode=driving&dir_action=navigate";
-
-  window.open(url, "_blank", "noopener,noreferrer");
-});
-
-// -------------------------
-// 6. REPORT A ROAD PROBLEM
-// -------------------------
-
-$("reportForm").addEventListener("submit", event => {
+$("reportForm").addEventListener("submit", async event => {
   event.preventDefault();
 
-  const location = $("roadLocation").value.trim();
+  const photoInput = $("problemPhoto");
+  let photo = "";
 
-  if (!location) {
-    return status(
-      "reportStatus",
-      "Enter a road or area.",
-      "error"
-    );
+  if (photoInput.files[0]) {
+    const file = photoInput.files[0];
+
+    if (!file.type.startsWith("image/")) {
+      alert("Please choose an image file.");
+      return;
+    }
+
+    if (file.size > 700 * 1024) {
+      alert("Please use an image smaller than 700 KB.");
+      return;
+    }
+
+    try {
+      photo = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    } catch {
+      alert("Could not read the selected photo.");
+      return;
+    }
   }
 
-  const report = {
-    id: Date.now(),
-    location,
+  const reports = readStorage("routesafe_reports");
+
+  reports.unshift({
     type: $("problemType").value,
-    details: $("problemDetails").value.trim(),
-    date: new Date().toLocaleString(),
-    ...(selectedPoint || {})
-  };
+    location: $("problemLocation").value.trim(),
+    description: $("problemDescription").value.trim(),
+    photo,
+    date: new Date().toISOString()
+  });
 
-  const reports = readData(REPORTS_KEY);
-  reports.unshift(report);
-
-  if (!saveData(REPORTS_KEY, reports)) {
-    return status(
-      "reportStatus",
-      "Unable to save this report in browser storage.",
-      "error"
-    );
+  if (writeStorage("routesafe_reports", reports)) {
+    $("reportForm").reset();
+    renderReports();
+    alert("Your report has been saved in this browser.");
   }
-
-  drawReport(report);
-  renderReports();
-
-  $("reportForm").reset();
-  selectedPoint = null;
-
-  $("selectedMapPoint").textContent =
-    "Optional: click the map to attach coordinates to this report.";
-
-  status(
-    "reportStatus",
-    "Road report saved on this device. It is not shared with other users.",
-    "success"
-  );
-
-  $("precautionType").value = report.type;
-  renderPrecautions();
 });
 
-// -------------------------
-// 7. LOAD CURRENT WEATHER
-// -------------------------
-
-const weatherCodes = {
-  0: ["Clear sky", "☀️"],
-  1: ["Mainly clear", "🌤️"],
-  2: ["Partly cloudy", "⛅"],
-  3: ["Overcast", "☁️"],
-  45: ["Fog", "🌫️"],
-  48: ["Fog", "🌫️"],
-  51: ["Light drizzle", "🌦️"],
-  53: ["Drizzle", "🌦️"],
-  55: ["Heavy drizzle", "🌧️"],
-  61: ["Light rain", "🌦️"],
-  63: ["Moderate rain", "🌧️"],
-  65: ["Heavy rain", "🌧️"],
-  71: ["Light snow", "🌨️"],
-  73: ["Snow", "🌨️"],
-  75: ["Heavy snow", "❄️"],
-  80: ["Rain showers", "🌦️"],
-  81: ["Rain showers", "🌧️"],
-  82: ["Heavy showers", "⛈️"],
-  95: ["Thunderstorm", "⛈️"],
-  96: ["Thunderstorm with hail", "⛈️"],
-  99: ["Severe thunderstorm", "⛈️"]
-};
-
-async function loadWeather(city) {
-  $("weatherResult").innerHTML =
-    "<p>Loading current weather…</p>";
-
-  try {
-    const geoResponse = await fetch(
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en`
-    );
-
-    if (!geoResponse.ok) {
-      throw new Error("Weather location search is unavailable.");
-    }
-
-    const geoData = await geoResponse.json();
-
-    if (!geoData.results?.length) {
-      throw new Error("City not found. Try another name.");
-    }
-
-    const place = geoData.results[0];
-
-    const url =
-      `https://api.open-meteo.com/v1/forecast?` +
-      `latitude=${place.latitude}` +
-      `&longitude=${place.longitude}` +
-      `&current=temperature_2m,relative_humidity_2m,` +
-      `apparent_temperature,precipitation,weather_code,wind_speed_10m` +
-      `&timezone=auto`;
-
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      throw new Error("Weather service is unavailable.");
-    }
-
-    const data = await response.json();
-    const c = data.current;
-
-    const [description, icon] =
-      weatherCodes[c.weather_code] ||
-      ["Conditions unavailable", "🌡️"];
-
-    const wetCodes = [
-      51, 53, 55, 61, 63, 65, 80, 81, 82
-    ];
-
-    const stormCodes = [95, 96, 99];
-    const fogCodes = [45, 48];
-
-    let warning =
-      "Check official local alerts before leaving and stay alert to changing conditions.";
-
-    if (wetCodes.includes(c.weather_code)) {
-      warning =
-        "Wet roads may reduce grip and increase braking distance. Slow down, increase following distance, and never drive through floodwater.";
-
-      $("precautionWeather").value = "rain";
-    } else if (stormCodes.includes(c.weather_code)) {
-      warning =
-        "Thunderstorms can create dangerous travel conditions. Seek safe shelter if conditions worsen and follow official alerts.";
-
-      $("precautionWeather").value = "storm";
-    } else if (fogCodes.includes(c.weather_code)) {
-      warning =
-        "Visibility may be low. Slow down, use low-beam headlights, and pull off the road safely if visibility becomes dangerous.";
-
-      $("precautionWeather").value = "fog";
-    } else {
-      $("precautionWeather").value = "clear";
-    }
-
-    $("weatherResult").innerHTML = `
-      <div class="weather-main">
-        <div>
-          <h3>
-            ${escapeHTML(place.name)},
-            ${escapeHTML(place.country || "")}
-          </h3>
-          <div class="weather-temp">
-            ${Math.round(c.temperature_2m)}°C
-          </div>
-          <div class="weather-desc">
-            ${icon} ${escapeHTML(description)} · feels like
-            ${Math.round(c.apparent_temperature)}°C
-          </div>
-        </div>
-        <div class="weather-icon">${icon}</div>
-      </div>
-
-      <div class="weather-stats">
-        <div class="weather-stat">
-          <span>Humidity</span>
-          <strong>${c.relative_humidity_2m}%</strong>
-        </div>
-        <div class="weather-stat">
-          <span>Wind speed</span>
-          <strong>${c.wind_speed_10m} km/h</strong>
-        </div>
-        <div class="weather-stat">
-          <span>Precipitation</span>
-          <strong>${c.precipitation} mm</strong>
-        </div>
-      </div>
-
-      <div class="weather-warning">${escapeHTML(warning)}</div>
-      <p class="small-note">
-        Updated: ${escapeHTML(String(c.time).replace("T", " "))}
-        local time.
-      </p>
-    `;
-
-    renderPrecautions();
-  } catch (error) {
-    $("weatherResult").innerHTML = `
-      <p class="status error">
-        ${escapeHTML(error.message || "Unable to load weather.")}
-      </p>
-    `;
-  }
-}
-
-$("weatherForm").addEventListener("submit", event => {
-  event.preventDefault();
-
-  const city = $("weatherCity").value.trim();
-
-  if (city) loadWeather(city);
-});
-
-// -------------------------
-// 8. SAFETY PRECAUTIONS
-// -------------------------
-
-const roadAdvice = {
-  normal: [
-    "Normal road conditions",
-    [
-      "Follow speed limits and traffic signals.",
-      "Wear a seat belt or helmet and avoid phone use while driving."
-    ]
-  ],
-  construction: [
-    "Road construction",
-    [
-      "Slow down and follow temporary signs and authorized diversions.",
-      "Keep extra distance from workers and other vehicles; never cross barriers."
-    ]
-  ],
-  closure: [
-    "Road closure",
-    [
-      "Never pass barricades or enter a closed road.",
-      "Use an open route confirmed by official signs or reliable navigation."
-    ]
-  ],
-  flooding: [
-    "Flooding / waterlogging",
-    [
-      "Never drive or walk through floodwater; depth and current can be deceptive.",
-      "Turn around and choose a safe alternative route; follow local emergency advice."
-    ]
-  ],
-  accident: [
-    "Accident nearby",
-    [
-      "Slow down safely and avoid crowding the incident.",
-      "Keep lanes clear for emergency responders; call local emergency services if needed."
-    ]
-  ],
-  pothole: [
-    "Potholes / damaged road",
-    [
-      "Reduce speed and scan ahead for damaged surfaces.",
-      "Avoid sudden swerving; change lanes only when it is safe."
-    ]
-  ]
-};
-
-const weatherAdvice = {
-  clear: [
-    "Clear / normal weather",
-    [
-      "Stay alert, hydrated, and rested on long trips.",
-      "Check your vehicle and route before departure."
-    ]
-  ],
-  rain: [
-    "Rain",
-    [
-      "Reduce speed and increase following distance on wet roads.",
-      "Use headlights when visibility is reduced; never drive through floodwater."
-    ]
-  ],
-  storm: [
-    "Thunderstorm / strong wind",
-    [
-      "If conditions become unsafe, stop at a safe sheltered location away from trees and flood-prone areas.",
-      "Follow official weather alerts and wait for conditions to improve."
-    ]
-  ],
-  fog: [
-    "Fog",
-    [
-      "Slow down and leave a larger gap between vehicles.",
-      "Use low-beam headlights; pull completely off the roadway at a safe place if visibility becomes dangerously poor."
-    ]
-  ],
-  heat: [
-    "Extreme heat",
-    [
-      "Carry water and take breaks in a cool place.",
-      "Never leave children or pets in a parked vehicle; stop safely if your vehicle overheats."
-    ]
-  ]
-};
-
-function adviceCard(item, warning = false) {
-  return `
-    <article class="precaution-card ${warning ? "warning" : ""}">
-      <h3>${warning ? "⚠ " : "✓ "}${escapeHTML(item[0])}</h3>
-      <ul>
-        ${item[1].map(text =>
-          `<li>${escapeHTML(text)}</li>`
-        ).join("")}
-      </ul>
-    </article>
-  `;
-}
-
-function renderPrecautions() {
-  const roadKey = $("precautionType").value;
-  const weatherKey = $("precautionWeather").value;
-
-  $("precautionResult").innerHTML =
-    adviceCard(
-      roadAdvice[roadKey] || roadAdvice.normal,
-      ["closure", "flooding", "accident"].includes(roadKey)
-    ) +
-    adviceCard(
-      weatherAdvice[weatherKey] || weatherAdvice.clear,
-      ["rain", "storm", "fog", "heat"].includes(weatherKey)
-    );
-}
-
-$("precautionForm").addEventListener("submit", event => {
-  event.preventDefault();
-  renderPrecautions();
-});
-
-$("problemType").addEventListener("change", () => {
-  $("precautionType").value = $("problemType").value;
-  renderPrecautions();
-});
-
-// -------------------------
-// 9. FEEDBACK SUBMISSION
-// -------------------------
+// --------------------------------------------------
+// USER FEEDBACK
+// --------------------------------------------------
 
 function renderFeedback() {
-  const items = readData(FEEDBACK_KEY);
+  const list = $("feedbackList");
+  list.replaceChildren();
 
-  $("feedbackCount").textContent =
-    `${items.length} entr${items.length === 1 ? "y" : "ies"}`;
+  const feedback = readStorage("routesafe_feedback");
 
-  $("feedbackList").innerHTML = items.length
-    ? items.slice(0, 40).map(item => {
-        const rating = Math.max(
-          1,
-          Math.min(5, Number(item.rating) || 5)
-        );
+  if (!feedback.length) {
+    list.innerHTML = '<p class="empty-state">No feedback yet. Share your experience with RouteSafe.</p>';
+    return;
+  }
 
-        return `
-          <article class="feed-item">
-            <div class="feed-top">
-              <h4>${escapeHTML(item.name || "Anonymous traveler")}</h4>
-              <span class="stars" aria-label="${rating} out of 5 stars">
-                ${"★".repeat(rating)}${"☆".repeat(5 - rating)}
-              </span>
-            </div>
-            <p>${escapeHTML(item.text)}</p>
-            <small>${escapeHTML(item.date || "")}</small>
-          </article>
-        `;
-      }).join("")
-    : `<p class="small-note">
-         No feedback yet. Your feedback will appear here after submission.
-       </p>`;
+  feedback.forEach(entry => {
+    const item = document.createElement("article");
+    item.className = "feed-item";
+
+    const top = document.createElement("div");
+    top.className = "feed-top";
+
+    const name = document.createElement("strong");
+    name.textContent = entry.name;
+
+    const stars = document.createElement("span");
+    stars.className = "stars";
+    stars.textContent = "★".repeat(entry.rating) +
+      "☆".repeat(5 - entry.rating);
+    stars.setAttribute("aria-label", `${entry.rating} out of 5 stars`);
+
+    top.append(name, stars);
+
+    const message = document.createElement("p");
+    message.textContent = entry.message;
+
+    const date = document.createElement("small");
+    date.textContent = new Date(entry.date).toLocaleString();
+
+    item.append(top, message, date);
+    list.appendChild(item);
+  });
 }
 
 $("feedbackForm").addEventListener("submit", event => {
   event.preventDefault();
 
-  const text = $("feedbackText").value.trim();
+  const feedback = readStorage("routesafe_feedback");
 
-  if (text.length < 3) {
-    return status(
-      "feedbackStatus",
-      "Please enter at least 3 characters.",
-      "error"
-    );
-  }
-
-  const items = readData(FEEDBACK_KEY);
-
-  items.unshift({
+  feedback.unshift({
     name: $("feedbackName").value.trim(),
     rating: Number($("feedbackRating").value),
-    text,
-    date: new Date().toLocaleString()
+    message: $("feedbackMessage").value.trim(),
+    date: new Date().toISOString()
   });
 
-  if (!saveData(FEEDBACK_KEY, items)) {
-    return status(
-      "feedbackStatus",
-      "Could not save feedback in this browser.",
-      "error"
-    );
+  if (writeStorage("routesafe_feedback", feedback)) {
+    $("feedbackForm").reset();
+    renderFeedback();
+    alert("Thank you! Your feedback has been saved.");
   }
-
-  $("feedbackForm").reset();
-  renderFeedback();
-
-  status(
-    "feedbackStatus",
-    "Thank you! Your feedback is saved and displayed below.",
-    "success"
-  );
 });
 
-// -------------------------
-// 10. START THE APPLICATION
-// -------------------------
+// --------------------------------------------------
+// INITIAL PAGE CONTENT
+// --------------------------------------------------
 
 renderReports();
 renderFeedback();
-renderPrecautions();
-loadWeather($("weatherCity").value.trim());
+
+// Wait until the page layout is ready before refreshing the map.
+window.addEventListener("load", () => {
+  map.invalidateSize();
+});
+
+
+
 
